@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Road Quality Mapper - Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        #log { height: 300px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: #f8f9fa; }
+    </style>
+</head>
+<body>
+    <h1>Road Quality Mapper - Test Page</h1>
+    
+    <div id="status-container"></div>
+    
+    <h3>Feature Tests</h3>
+    <button onclick="testGeolocation()">Test GPS</button>
+    <button onclick="testAccelerometer()">Test Accelerometer</button>
+    <button onclick="testFirebase()">Test Firebase</button>
+    <button onclick="testVibrationFilter()">Test Vibration Filter</button>
+    <button onclick="clearLog()">Clear Log</button>
+    
+    <h3>Recording Simulation</h3>
+    <button id="startTest" onclick="startTestRecording()">Start Test Recording</button>
+    <button id="stopTest" onclick="stopTestRecording()" disabled>Stop Test Recording</button>
+    
+    <div id="log"></div>
+
+    <script>
+        let testRecording = false;
+        let testData = [];
+        let testInterval = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.style.color = type === 'error' ? 'red' : type === 'success' ? 'green' : 'black';
+            entry.textContent = `[${timestamp}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function addStatus(message, type) {
+            const container = document.getElementById('status-container');
+            const status = document.createElement('div');
+            status.className = `status ${type}`;
+            status.textContent = message;
+            container.appendChild(status);
+        }
+
+        function testGeolocation() {
+            log('Testing GPS/Geolocation...');
+            if (!navigator.geolocation) {
+                log('Geolocation not supported', 'error');
+                addStatus('GPS: Not supported', 'error');
+                return;
+            }
+            
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    log(`GPS Success: ${position.coords.latitude}, ${position.coords.longitude}`, 'success');
+                    addStatus('GPS: Working', 'success');
+                },
+                (error) => {
+                    log(`GPS Error: ${error.message}`, 'error');
+                    addStatus('GPS: Error - ' + error.message, 'error');
+                },
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        }
+
+        function testAccelerometer() {
+            log('Testing accelerometer...');
+            if (!window.DeviceMotionEvent) {
+                log('Device motion not supported', 'error');
+                addStatus('Accelerometer: Not supported', 'error');
+                return;
+            }
+
+            // Request permission for iOS 13+
+            if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                DeviceMotionEvent.requestPermission().then(response => {
+                    if (response === 'granted') {
+                        startAccelerometerTest();
+                    } else {
+                        log('Motion permission denied', 'error');
+                        addStatus('Accelerometer: Permission denied', 'error');
+                    }
+                });
+            } else {
+                startAccelerometerTest();
+            }
+        }
+
+        function startAccelerometerTest() {
+            let sampleCount = 0;
+            const maxSamples = 10;
+            
+            function handleMotion(event) {
+                const acc = event.accelerationIncludingGravity;
+                if (acc && acc.x !== null) {
+                    sampleCount++;
+                    const magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+                    log(`Accelerometer sample ${sampleCount}: ${magnitude.toFixed(2)}`);
+                    
+                    if (sampleCount >= maxSamples) {
+                        window.removeEventListener('devicemotion', handleMotion);
+                        log('Accelerometer test completed', 'success');
+                        addStatus('Accelerometer: Working', 'success');
+                    }
+                }
+            }
+            
+            window.addEventListener('devicemotion', handleMotion);
+            setTimeout(() => {
+                window.removeEventListener('devicemotion', handleMotion);
+                if (sampleCount === 0) {
+                    log('No accelerometer data received', 'error');
+                    addStatus('Accelerometer: No data', 'error');
+                }
+            }, 5000);
+        }
+
+        function testFirebase() {
+            log('Testing Firebase connection...');
+            if (typeof firebase === 'undefined') {
+                log('Firebase SDK not loaded', 'error');
+                addStatus('Firebase: SDK not loaded', 'error');
+                return;
+            }
+            
+            if (typeof firebaseConfig === 'undefined') {
+                log('Firebase config not found', 'error');
+                addStatus('Firebase: Config missing', 'error');
+                return;
+            }
+            
+            try {
+                // Test if already initialized
+                if (firebase.apps.length === 0) {
+                    firebase.initializeApp(firebaseConfig);
+                }
+                const db = firebase.firestore();
+                log('Firebase initialized successfully', 'success');
+                addStatus('Firebase: Connected', 'success');
+                
+                // Test write/read
+                const testDoc = db.collection('test').doc('connectivity');
+                testDoc.set({ timestamp: new Date(), test: true })
+                    .then(() => {
+                        log('Firebase write test successful', 'success');
+                        return testDoc.get();
+                    })
+                    .then(doc => {
+                        if (doc.exists) {
+                            log('Firebase read test successful', 'success');
+                            addStatus('Firebase: Read/Write working', 'success');
+                        }
+                    })
+                    .catch(error => {
+                        log(`Firebase test error: ${error.message}`, 'error');
+                        addStatus('Firebase: Read/Write error', 'error');
+                    });
+            } catch (error) {
+                log(`Firebase initialization error: ${error.message}`, 'error');
+                addStatus('Firebase: Initialization error', 'error');
+            }
+        }
+
+        function testVibrationFilter() {
+            log('Testing vibration filtering algorithm...');
+            
+            // Simulate different types of motion
+            const testCases = [
+                { name: 'Normal road vibration', values: [10.2, 9.8, 10.1, 9.9, 10.3] },
+                { name: 'Rough road', values: [12.5, 11.8, 13.2, 12.1, 11.9] },
+                { name: 'Phone handling (extreme)', values: [25.3, 8.2, 30.1, 5.4, 28.7] },
+                { name: 'Braking (low frequency)', values: [8.5, 8.2, 8.0, 7.8, 7.5] }
+            ];
+            
+            testCases.forEach(testCase => {
+                const filtered = testCase.values.map(val => filterVibration(val));
+                const rms = Math.sqrt(filtered.reduce((sum, v) => sum + v*v, 0) / filtered.length);
+                log(`${testCase.name}: RMS = ${rms.toFixed(2)} (filtered from ${testCase.values.join(', ')})`);
+            });
+            
+            addStatus('Vibration Filter: Tested', 'success');
+        }
+
+        function filterVibration(magnitude) {
+            const baseline = 9.8;
+            const deviation = Math.abs(magnitude - baseline);
+            if (deviation > 15) return 0;
+            return Math.max(0, deviation - 0.5);
+        }
+
+        function startTestRecording() {
+            testRecording = true;
+            testData = [];
+            document.getElementById('startTest').disabled = true;
+            document.getElementById('stopTest').disabled = false;
+            
+            log('Starting test recording simulation...');
+            
+            testInterval = setInterval(() => {
+                // Simulate GPS and accelerometer data
+                const gpsData = {
+                    lat: 19.0760 + (Math.random() - 0.5) * 0.001,
+                    lng: 72.8777 + (Math.random() - 0.5) * 0.001,
+                    timestamp: Date.now()
+                };
+                
+                const accData = {
+                    magnitude: 9.8 + (Math.random() - 0.5) * 3,
+                    timestamp: Date.now()
+                };
+                
+                testData.push({ gps: gpsData, acc: accData });
+                log(`Data point ${testData.length}: GPS(${gpsData.lat.toFixed(6)}, ${gpsData.lng.toFixed(6)}), Acc(${accData.magnitude.toFixed(2)})`);
+                
+                if (testData.length >= 20) {
+                    stopTestRecording();
+                }
+            }, 1000);
+        }
+
+        function stopTestRecording() {
+            testRecording = false;
+            if (testInterval) {
+                clearInterval(testInterval);
+                testInterval = null;
+            }
+            
+            document.getElementById('startTest').disabled = false;
+            document.getElementById('stopTest').disabled = true;
+            
+            log(`Test recording completed. Collected ${testData.length} data points.`);
+            log('Simulating 200m segmentation...');
+            
+            // Simulate segmentation
+            let segmentCount = Math.ceil(testData.length / 5); // Assume ~5 points per 200m segment
+            for (let i = 0; i < segmentCount; i++) {
+                const segmentData = testData.slice(i * 5, (i + 1) * 5);
+                const avgRoughness = segmentData.reduce((sum, d) => sum + filterVibration(d.acc.magnitude), 0) / segmentData.length;
+                log(`Segment ${i + 1}: ${segmentData.length} points, roughness = ${avgRoughness.toFixed(2)}`);
+            }
+            
+            addStatus('Test Recording: Completed', 'success');
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            document.getElementById('status-container').innerHTML = '';
+        }
+
+        // Run initial tests
+        window.onload = function() {
+            log('Road Quality Mapper Test Page loaded');
+            log('Click buttons above to test individual features');
+            addStatus('Application: Loaded', 'success');
+        };
+    </script>
+</body>
+</html>

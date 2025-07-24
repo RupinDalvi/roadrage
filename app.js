@@ -1,4 +1,28 @@
 // Milestone 5: Vibration Preview Graph for Upcoming Segment
+// Enhanced with Firebase integration and real sensor data
+
+// Initialize Firebase
+let db = null;
+if (typeof firebase !== 'undefined' && typeof firebaseConfig !== 'undefined') {
+    try {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.firestore();
+        console.log('Firebase initialized successfully');
+    } catch (error) {
+        console.warn('Firebase initialization failed:', error);
+    }
+} else {
+    console.warn('Firebase or config not available. Please ensure firebase-config.js is properly configured.');
+}
+
+// Real sensor data variables
+let isRecording = false;
+let accelerometerData = [];
+let gpsData = [];
+let recordingStartTime = null;
+let watchId = null;
+let currentPosition = null;
+let recordedSegments = [];
 
 let map;
 let routePolyline;
@@ -12,7 +36,7 @@ const SIM_SPEED_MPS = 5.56; // 20 km/h
 let segments = []; // Each: {startIdx, endIdx, coords, vibration: [], roughness: number}
 let segmentPolylines = [];
 let currentSegmentIdx = null;
-const SEGMENT_LENGTH_M = 50;
+const SEGMENT_LENGTH_M = 200;
 
 let tableEl = null;
 
@@ -65,6 +89,18 @@ function initMap() {
             }
         }
     });
+
+    // Load and display previous data from Firebase
+    loadPreviousData().then(previousData => {
+        if (previousData.length > 0) {
+            displayPreviousData(previousData);
+        }
+    });
+
+    // Enable recording button if geolocation is available
+    if (navigator.geolocation && window.DeviceMotionEvent) {
+        document.getElementById('startRecordingBtn').disabled = false;
+    }
 }
 
 // GPX parsing (only extracts <trkpt lat="..." lon="..."> from first <trk>)
@@ -255,7 +291,7 @@ function updateTable() {
     });
 }
 
-// Vibration preview for next segment (or next 50m)
+// Vibration preview for next segment (or next 200m)
 function updateVibrationPreview() {
     let nextIdx = currentSegmentIdx != null ? currentSegmentIdx + 1 : 0;
     let data = [];
@@ -282,6 +318,316 @@ function updateVibrationPreview() {
     vibrationChart.data.datasets[0].backgroundColor = (nextIdx < segments.length && !segments[nextIdx].vibration.length) ? 'rgba(128,128,128,0.1)' : 'rgba(60, 125, 201, 0.2)';
     vibrationChart.data.datasets[0].borderColor = (nextIdx < segments.length && !segments[nextIdx].vibration.length) ? '#888' : '#3c7dc9';
     vibrationChart.update();
+}
+
+// Real sensor data collection functions
+function startRealRecording() {
+    if (!navigator.geolocation || !window.DeviceMotionEvent) {
+        alert('GPS or accelerometer not supported on this device');
+        return;
+    }
+
+    isRecording = true;
+    recordingStartTime = Date.now();
+    accelerometerData = [];
+    gpsData = [];
+    recordedSegments = [];
+    currentPosition = null;
+
+    // Request permissions for iOS 13+
+    if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        DeviceMotionEvent.requestPermission().then(response => {
+            if (response === 'granted') {
+                startSensorListeners();
+            } else {
+                alert('Motion permission denied');
+                stopRealRecording();
+            }
+        });
+    } else {
+        startSensorListeners();
+    }
+
+    document.getElementById('startRecordingBtn').disabled = true;
+    document.getElementById('stopRecordingBtn').disabled = false;
+    document.getElementById('startBtn').disabled = true;
+}
+
+function startSensorListeners() {
+    // Start GPS tracking
+    watchId = navigator.geolocation.watchPosition(
+        (position) => {
+            const timestamp = Date.now();
+            currentPosition = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+                timestamp: timestamp,
+                accuracy: position.coords.accuracy
+            };
+            gpsData.push(currentPosition);
+            
+            // Update map marker if available
+            if (map && marker) {
+                marker.setLatLng([currentPosition.lat, currentPosition.lng]);
+            } else if (map) {
+                marker = L.marker([currentPosition.lat, currentPosition.lng]).addTo(map);
+                map.setView([currentPosition.lat, currentPosition.lng], 16);
+            }
+            
+            processRealTimeData();
+        },
+        (error) => {
+            console.error('GPS error:', error);
+        },
+        {
+            enableHighAccuracy: true,
+            maximumAge: 1000,
+            timeout: 5000
+        }
+    );
+
+    // Start accelerometer tracking
+    window.addEventListener('devicemotion', handleMotionEvent);
+}
+
+function handleMotionEvent(event) {
+    if (!isRecording) return;
+    
+    const timestamp = Date.now();
+    const acc = event.accelerationIncludingGravity;
+    
+    if (acc && acc.x !== null && acc.y !== null && acc.z !== null) {
+        const rawMagnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+        const filteredMagnitude = filterVibration(rawMagnitude, timestamp);
+        
+        accelerometerData.push({
+            timestamp: timestamp,
+            raw: rawMagnitude,
+            filtered: filteredMagnitude,
+            x: acc.x,
+            y: acc.y,
+            z: acc.z
+        });
+    }
+}
+
+// Vibration filtering to remove non-road movements
+function filterVibration(magnitude, timestamp) {
+    // Simple high-pass filter to remove gravity and low-frequency movements
+    // This filters out slow movements like braking/accelerating
+    const baseline = 9.8; // approximate gravity
+    const deviation = Math.abs(magnitude - baseline);
+    
+    // Filter out extreme values that might be from phone handling
+    if (deviation > 15) return 0; // likely phone handling
+    
+    // Apply simple moving average filter
+    const windowSize = 5;
+    const recentData = accelerometerData.slice(-windowSize);
+    if (recentData.length > 0) {
+        const avgRecent = recentData.reduce((sum, d) => sum + d.raw, 0) / recentData.length;
+        // High-pass filter: only keep vibrations above the recent average
+        const filtered = Math.max(0, deviation - (Math.abs(avgRecent - baseline) * 0.7));
+        return filtered;
+    }
+    
+    return deviation;
+}
+
+function processRealTimeData() {
+    if (!currentPosition || gpsData.length < 2) return;
+    
+    // Group accelerometer data into 200m segments based on GPS
+    const segmentData = groupDataIntoSegments();
+    updateRealTimeDisplay(segmentData);
+}
+
+function groupDataIntoSegments() {
+    if (gpsData.length < 2) return [];
+    
+    const segments = [];
+    let currentSegment = {
+        startPos: gpsData[0],
+        endPos: null,
+        distance: 0,
+        vibrationData: [],
+        roughness: 0
+    };
+    
+    for (let i = 1; i < gpsData.length; i++) {
+        const dist = latLonDistance(
+            [currentSegment.startPos.lat, currentSegment.startPos.lng],
+            [gpsData[i].lat, gpsData[i].lng]
+        );
+        
+        if (dist >= 200) {
+            // Complete current segment
+            currentSegment.endPos = gpsData[i];
+            currentSegment.distance = dist;
+            
+            // Get vibration data for this time period
+            const startTime = currentSegment.startPos.timestamp;
+            const endTime = currentSegment.endPos.timestamp;
+            currentSegment.vibrationData = accelerometerData.filter(
+                d => d.timestamp >= startTime && d.timestamp <= endTime
+            ).map(d => d.filtered);
+            
+            if (currentSegment.vibrationData.length > 0) {
+                currentSegment.roughness = computeRMS(currentSegment.vibrationData);
+            }
+            
+            segments.push(currentSegment);
+            
+            // Start new segment
+            currentSegment = {
+                startPos: gpsData[i],
+                endPos: null,
+                distance: 0,
+                vibrationData: [],
+                roughness: 0
+            };
+        }
+    }
+    
+    return segments;
+}
+
+function updateRealTimeDisplay(segmentData) {
+    // Update the map with new segments
+    if (segmentData.length > recordedSegments.length) {
+        const newSegments = segmentData.slice(recordedSegments.length);
+        newSegments.forEach(segment => {
+            const coords = [
+                [segment.startPos.lat, segment.startPos.lng],
+                [segment.endPos.lat, segment.endPos.lng]
+            ];
+            const color = roughnessColor(segment.roughness, 0, 10);
+            const polyline = L.polyline(coords, { color: color, weight: 6 }).addTo(map);
+            segmentPolylines.push(polyline);
+        });
+        recordedSegments = segmentData;
+        updateRealTimeTable();
+    }
+}
+
+function updateRealTimeTable() {
+    let tbody = tableEl.querySelector('tbody');
+    tbody.innerHTML = '';
+    recordedSegments.forEach((seg, idx) => {
+        let tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${idx+1}</td>
+          <td>${seg.distance.toFixed(1)}</td>
+          <td>${seg.roughness ? seg.roughness.toFixed(2) : '-'}</td>
+          <td>${seg.vibrationData.length}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function stopRealRecording() {
+    isRecording = false;
+    
+    if (watchId) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+    }
+    
+    window.removeEventListener('devicemotion', handleMotionEvent);
+    
+    document.getElementById('startRecordingBtn').disabled = false;
+    document.getElementById('stopRecordingBtn').disabled = true;
+    document.getElementById('startBtn').disabled = false;
+    
+    // Process final segments and export to Firebase
+    const finalSegments = groupDataIntoSegments();
+    exportToFirebase(finalSegments);
+}
+
+// Firebase functions
+async function exportToFirebase(segments) {
+    if (!db) {
+        console.warn('Firebase not initialized, cannot export data');
+        return;
+    }
+    
+    try {
+        const batch = db.batch();
+        
+        for (const segment of segments) {
+            if (segment.endPos) {
+                const docId = `${segment.startPos.lat.toFixed(6)}_${segment.startPos.lng.toFixed(6)}`;
+                const docRef = db.collection('roadQuality').doc(docId);
+                
+                const data = {
+                    startLat: segment.startPos.lat,
+                    startLng: segment.startPos.lng,
+                    endLat: segment.endPos.lat,
+                    endLng: segment.endPos.lng,
+                    roughness: segment.roughness,
+                    distance: segment.distance,
+                    timestamp: new Date(),
+                    vibrationSamples: segment.vibrationData.length
+                };
+                
+                batch.set(docRef, data, { merge: true });
+            }
+        }
+        
+        await batch.commit();
+        console.log('Data exported to Firebase successfully');
+        alert('Recording completed and data saved!');
+    } catch (error) {
+        console.error('Error exporting to Firebase:', error);
+        alert('Error saving data to Firebase');
+    }
+}
+
+async function loadPreviousData() {
+    if (!db) {
+        console.warn('Firebase not initialized, cannot load previous data');
+        return [];
+    }
+    
+    try {
+        const snapshot = await db.collection('roadQuality').get();
+        const previousData = [];
+        
+        snapshot.forEach(doc => {
+            const data = doc.data();
+            previousData.push(data);
+        });
+        
+        console.log(`Loaded ${previousData.length} previous road quality records`);
+        return previousData;
+    } catch (error) {
+        console.error('Error loading previous data:', error);
+        return [];
+    }
+}
+
+function displayPreviousData(previousData) {
+    // Clear existing previous data polylines
+    // (You might want to store these separately from current recording polylines)
+    
+    let minRoughness = Math.min(...previousData.map(d => d.roughness).filter(r => r > 0));
+    let maxRoughness = Math.max(...previousData.map(d => d.roughness));
+    if (!isFinite(minRoughness)) minRoughness = 1;
+    if (!isFinite(maxRoughness)) maxRoughness = 10;
+    
+    previousData.forEach(data => {
+        const coords = [
+            [data.startLat, data.startLng],
+            [data.endLat, data.endLng]
+        ];
+        const color = roughnessColor(data.roughness, minRoughness, maxRoughness);
+        L.polyline(coords, { 
+            color: color, 
+            weight: 3, 
+            opacity: 0.7,
+            dashArray: '5, 5' // Dashed line to distinguish from current recording
+        }).addTo(map);
+    });
 }
 
 function latLonDistance(a, b) {
@@ -317,5 +663,7 @@ document.getElementById('gpxInput').addEventListener('change', function(e) {
 
 document.getElementById('startBtn').addEventListener('click', startSimulation);
 document.getElementById('stopBtn').addEventListener('click', stopSimulation);
+document.getElementById('startRecordingBtn').addEventListener('click', startRealRecording);
+document.getElementById('stopRecordingBtn').addEventListener('click', stopRealRecording);
 
 window.onload = initMap;

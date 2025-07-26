@@ -2,14 +2,15 @@
 // Replace these values with your actual Firebase project configuration
 // You can find these values in your Firebase Console > Project Settings > General > Your apps
 
-const firebaseConfig = {
-    apiKey: "your-api-key-here",
-    authDomain: "your-project-id.firebaseapp.com",
-    projectId: "your-project-id",
-    storageBucket: "your-project-id.appspot.com",
-    messagingSenderId: "123456789012",
-    appId: "1:123456789012:web:abcdef123456789012345678"
-};
+  const firebaseConfig = {
+    apiKey: "AIzaSyBEFLwtNYNL9u2tEgN0f8aWYHl4GJajH5Q",
+    authDomain: "roadrage-6de0b.firebaseapp.com",
+    projectId: "roadrage-6de0b",
+    storageBucket: "roadrage-6de0b.firebasestorage.app",
+    messagingSenderId: "135144834800",
+    appId: "1:135144834800:web:caea78b11e18328dee2435",
+    measurementId: "G-799WZ0B7LS"
+  };
 
 // Instructions:
 // 1. Go to https://console.firebase.google.com/

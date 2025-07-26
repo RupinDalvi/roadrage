@@ -10,6 +10,13 @@ header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+}
+header div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    align-items: center;
 }
 main {
     padding: 1em;
@@ -80,8 +87,15 @@ button {
     background: #3c7dc9;
     color: white;
     cursor: pointer;
+    margin-bottom: 0.5em;
 }
 button:disabled {
     background: #a0a0a0;
     cursor: not-allowed;
+}
+#startRecordingBtn {
+    background: #28a745;
+}
+#stopRecordingBtn {
+    background: #dc3545;
 }

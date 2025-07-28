@@ -36,7 +36,7 @@ const SIM_SPEED_MPS = 5.56; // 20 km/h
 let segments = []; // Each: {startIdx, endIdx, coords, vibration: [], roughness: number}
 let segmentPolylines = [];
 let currentSegmentIdx = null;
-const SEGMENT_LENGTH_M = 200;
+const SEGMENT_LENGTH_M = 1;
 
 let tableEl = null;
 

@@ -378,11 +378,21 @@ function startSensorListeners() {
         },
         (error) => {
             console.error('GPS error:', error);
+            // FIX 1: Add retry logic for GPS timeout errors (code 3)
+            if (error.code === 3) {
+                alert('GPS timeout occurred. Retrying in 3 seconds...');
+                setTimeout(() => {
+                    if (isRecording) {
+                        console.log('Retrying GPS connection...');
+                        startSensorListeners();
+                    }
+                }, 3000);
+            }
         },
         {
             enableHighAccuracy: true,
             maximumAge: 1000,
-            timeout: 5000
+            timeout: 30000  // FIX 1: Increased from 5000ms to 30000ms (30 seconds)
         }
     );
 
@@ -399,6 +409,9 @@ function handleMotionEvent(event) {
     if (acc && acc.x !== null && acc.y !== null && acc.z !== null) {
         const rawMagnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
         const filteredMagnitude = filterVibration(rawMagnitude, timestamp);
+        
+        // FIX 4: Add logging to debug if accelerometer events are firing
+        console.log(`Accelerometer event: raw=${rawMagnitude.toFixed(2)}, filtered=${filteredMagnitude.toFixed(2)}`);
         
         accelerometerData.push({
             timestamp: timestamp,
@@ -460,7 +473,7 @@ function groupDataIntoSegments() {
             [gpsData[i].lat, gpsData[i].lng]
         );
         
-        if (dist >= 200) {
+        if (dist >= 20) {  // FIX 2: Lowered from 200m to 20m for easier testing
             // Complete current segment
             currentSegment.endPos = gpsData[i];
             currentSegment.distance = dist;
@@ -541,6 +554,16 @@ function stopRealRecording() {
     
     // Process final segments and export to Firebase
     const finalSegments = groupDataIntoSegments();
+    
+    // FIX 3: Add logging and alert if no segments were created
+    console.log('Final segments created:', finalSegments);
+    if (finalSegments.length === 0) {
+        console.warn('No segments were created - insufficient GPS data or distance traveled');
+        alert('Warning: No road segments were recorded. You may need to travel more distance or check GPS connectivity.');
+    } else {
+        console.log(`${finalSegments.length} segments ready for upload`);
+    }
+    
     exportToFirebase(finalSegments);
 }
 
@@ -551,8 +574,16 @@ async function exportToFirebase(segments) {
         return;
     }
     
+    // FIX 5: Check if there are any segments to upload
+    if (!segments || segments.length === 0) {
+        console.warn('No segments to upload to Firebase');
+        alert('No road segments to upload. Recording completed but no data was saved.');
+        return;
+    }
+    
     try {
         const batch = db.batch();
+        let segmentsUploaded = 0;
         
         for (const segment of segments) {
             if (segment.endPos) {
@@ -571,12 +602,19 @@ async function exportToFirebase(segments) {
                 };
                 
                 batch.set(docRef, data, { merge: true });
+                segmentsUploaded++;
             }
         }
         
+        if (segmentsUploaded === 0) {
+            console.warn('No valid segments found for upload');
+            alert('No valid road segments to upload. Check GPS data quality.');
+            return;
+        }
+        
         await batch.commit();
-        console.log('Data exported to Firebase successfully');
-        alert('Recording completed and data saved!');
+        console.log(`Data exported to Firebase successfully: ${segmentsUploaded} segments`);
+        alert(`Recording completed and ${segmentsUploaded} road segments saved!`);
     } catch (error) {
         console.error('Error exporting to Firebase:', error);
         alert('Error saving data to Firebase');

@@ -4,6 +4,7 @@
 // Debug and logging configuration
 const DEBUG_MODE = true; // Set to false for production
 const TEST_MODE = true; // Enables lower thresholds for testing
+const SIMULATE_SENSORS = false; // Set to true to simulate sensor data for testing
 
 function logDebug(message, data = null) {
     if (DEBUG_MODE) {
@@ -18,6 +19,42 @@ function showUserFeedback(message, type = 'info') {
         alert(message);
     }
     // You could also add UI notifications here instead of alerts
+}
+
+// Test mode functions for simulating sensor data
+function simulateGPSData() {
+    if (!SIMULATE_SENSORS) return null;
+    
+    // Simulate movement around Mumbai area
+    const baseLat = 19.0760;
+    const baseLng = 72.8777;
+    const time = Date.now();
+    
+    // Create a simple walking pattern
+    const walkOffset = Math.sin(time / 10000) * 0.001; // ~100m movement
+    
+    return {
+        lat: baseLat + walkOffset,
+        lng: baseLng + walkOffset * 0.5,
+        timestamp: time,
+        accuracy: 5 + Math.random() * 10 // 5-15m accuracy
+    };
+}
+
+function simulateMotionData() {
+    if (!SIMULATE_SENSORS) return null;
+    
+    // Simulate accelerometer data with some road vibration
+    const baseGravity = 9.8;
+    const vibration = (Math.random() - 0.5) * 2; // ±1 m/s²
+    const roadNoise = (Math.random() - 0.5) * 0.5; // ±0.25 m/s²
+    
+    return {
+        x: vibration + roadNoise,
+        y: (Math.random() - 0.5) * 0.3,
+        z: baseGravity + vibration * 0.5,
+        timestamp: Date.now()
+    };
 }
 
 // Check HTTPS requirement for sensor access
@@ -150,6 +187,13 @@ function initMap() {
 // Check sensor availability and request permissions
 async function checkSensorAvailability() {
     logDebug('Checking sensor availability');
+    
+    if (SIMULATE_SENSORS) {
+        logDebug('Simulation mode enabled - bypassing real sensor checks');
+        document.getElementById('startRecordingBtn').disabled = false;
+        showUserFeedback('Simulation mode enabled - sensors will be simulated for testing.', 'warning');
+        return;
+    }
     
     let gpsAvailable = false;
     let motionAvailable = false;
@@ -542,28 +586,39 @@ async function startRealRecording() {
     logDebug('Starting real recording');
     
     if (!navigator.geolocation || !window.DeviceMotionEvent) {
-        showUserFeedback('GPS or accelerometer not supported on this device', 'error');
-        return;
+        if (!SIMULATE_SENSORS) {
+            showUserFeedback('GPS or accelerometer not supported on this device', 'error');
+            return;
+        } else {
+            logDebug('Sensors not available, but simulation mode is enabled');
+        }
     }
 
-    // Request permissions explicitly
-    logDebug('Requesting GPS permission...');
-    const gpsOk = await requestGPSPermission();
-    
-    if (!gpsOk) {
-        logDebug('GPS permission failed, aborting recording');
-        return;
-    }
-    
-    logDebug('Requesting motion sensor permission...');
-    const motionOk = await requestMotionPermission();
-    
-    if (!motionOk) {
-        logDebug('Motion permission failed, aborting recording');
-        return;
+    // Skip permission requests if using simulated sensors
+    if (SIMULATE_SENSORS) {
+        logDebug('Using simulated sensors - skipping permission requests');
+        gpsPermissionGranted = true;
+        motionPermissionGranted = true;
+    } else {
+        // Request permissions explicitly
+        logDebug('Requesting GPS permission...');
+        const gpsOk = await requestGPSPermission();
+        
+        if (!gpsOk) {
+            logDebug('GPS permission failed, aborting recording');
+            return;
+        }
+        
+        logDebug('Requesting motion sensor permission...');
+        const motionOk = await requestMotionPermission();
+        
+        if (!motionOk) {
+            logDebug('Motion permission failed, aborting recording');
+            return;
+        }
     }
 
-    // Both permissions granted, start recording
+    // Both permissions granted (or simulation mode), start recording
     isRecording = true;
     recordingStartTime = Date.now();
     accelerometerData = [];
@@ -571,14 +626,15 @@ async function startRealRecording() {
     recordedSegments = [];
     currentPosition = null;
 
-    logDebug('Starting sensor listeners with both permissions granted');
+    logDebug('Starting sensor listeners with permissions granted');
     startSensorListeners();
 
     document.getElementById('startRecordingBtn').disabled = true;
     document.getElementById('stopRecordingBtn').disabled = false;
     document.getElementById('startBtn').disabled = true;
     
-    showUserFeedback('Recording started! Move to collect road quality data.', 'info');
+    const modeMessage = SIMULATE_SENSORS ? 'Recording started with simulated sensors!' : 'Recording started! Move to collect road quality data.';
+    showUserFeedback(modeMessage, 'info');
     
     // Set up a timer to check for data collection
     setTimeout(() => {
@@ -606,6 +662,12 @@ function checkDataCollection() {
 
 function startSensorListeners() {
     logDebug('Starting GPS and motion sensor listeners');
+    
+    if (SIMULATE_SENSORS) {
+        logDebug('Using simulated sensor data for testing');
+        startSimulatedSensors();
+        return;
+    }
     
     // Start GPS tracking
     watchId = navigator.geolocation.watchPosition(
@@ -661,6 +723,59 @@ function startSensorListeners() {
     // Start accelerometer tracking
     window.addEventListener('devicemotion', handleMotionEvent);
     logDebug('Motion event listener added');
+}
+
+function startSimulatedSensors() {
+    logDebug('Starting simulated sensor data generation');
+    
+    // Simulate GPS updates every 2 seconds
+    const gpsInterval = setInterval(() => {
+        if (!isRecording) {
+            clearInterval(gpsInterval);
+            return;
+        }
+        
+        const simulatedGPS = simulateGPSData();
+        if (simulatedGPS) {
+            currentPosition = simulatedGPS;
+            gpsData.push(currentPosition);
+            
+            logDebug(`Simulated GPS: ${currentPosition.lat.toFixed(6)}, ${currentPosition.lng.toFixed(6)}`);
+            
+            // Update map marker if available
+            if (map && marker) {
+                marker.setLatLng([currentPosition.lat, currentPosition.lng]);
+            } else if (map) {
+                marker = L.marker([currentPosition.lat, currentPosition.lng]).addTo(map);
+                map.setView([currentPosition.lat, currentPosition.lng], 16);
+            }
+            
+            processRealTimeData();
+        }
+    }, 2000);
+    
+    // Simulate motion updates every 100ms
+    const motionInterval = setInterval(() => {
+        if (!isRecording) {
+            clearInterval(motionInterval);
+            return;
+        }
+        
+        const simulatedMotion = simulateMotionData();
+        if (simulatedMotion) {
+            const event = {
+                accelerationIncludingGravity: {
+                    x: simulatedMotion.x,
+                    y: simulatedMotion.y,
+                    z: simulatedMotion.z
+                }
+            };
+            handleMotionEvent(event);
+        }
+    }, 100);
+    
+    // Store intervals for cleanup
+    watchId = { gpsInterval, motionInterval };
 }
 
 function handleMotionEvent(event) {
@@ -815,13 +930,23 @@ function stopRealRecording() {
     isRecording = false;
     
     if (watchId) {
-        navigator.geolocation.clearWatch(watchId);
+        if (SIMULATE_SENSORS && watchId.gpsInterval) {
+            // Clean up simulated sensor intervals
+            clearInterval(watchId.gpsInterval);
+            clearInterval(watchId.motionInterval);
+            logDebug('Simulated sensor intervals cleared');
+        } else {
+            // Clean up real GPS watch
+            navigator.geolocation.clearWatch(watchId);
+            logDebug('GPS watch cleared');
+        }
         watchId = null;
-        logDebug('GPS watch cleared');
     }
     
-    window.removeEventListener('devicemotion', handleMotionEvent);
-    logDebug('Motion event listener removed');
+    if (!SIMULATE_SENSORS) {
+        window.removeEventListener('devicemotion', handleMotionEvent);
+        logDebug('Motion event listener removed');
+    }
     
     document.getElementById('startRecordingBtn').disabled = false;
     document.getElementById('stopRecordingBtn').disabled = true;

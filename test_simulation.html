@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Simulation Mode Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        #log { height: 400px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: #f8f9fa; }
+        .data-display { margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Simulation Mode Test</h1>
+    
+    <div id="status-container"></div>
+    
+    <h3>Simulation Controls</h3>
+    <button id="startSim" onclick="startSimulationTest()">Start Simulation</button>
+    <button id="stopSim" onclick="stopSimulationTest()" disabled>Stop Simulation</button>
+    <button onclick="clearLog()">Clear Log</button>
+    
+    <div class="data-display">
+        <strong>Data Collected:</strong>
+        <div>GPS Points: <span id="gpsCount">0</span></div>
+        <div>Motion Samples: <span id="motionCount">0</span></div>
+        <div>Current Segments: <span id="segmentCount">0</span></div>
+    </div>
+    
+    <div id="log"></div>
+
+    <script>
+        // Copy simulation functions from app.js
+        const DEBUG_MODE = true;
+        const TEST_MODE = true;
+        const SIMULATE_SENSORS = true;
+        const SEGMENT_LENGTH_M = TEST_MODE ? 50 : 200;
+        
+        let isRecording = false;
+        let accelerometerData = [];
+        let gpsData = [];
+        let simulationIntervals = [];
+
+        function logDebug(message, data = null) {
+            const timestamp = new Date().toISOString();
+            console.log(`[${timestamp}] ${message}`, data || '');
+            
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function showUserFeedback(message, type = 'info') {
+            const container = document.getElementById('status-container');
+            const status = document.createElement('div');
+            status.className = `status ${type}`;
+            status.textContent = message;
+            container.appendChild(status);
+        }
+
+        function simulateGPSData() {
+            const baseLat = 19.0760;
+            const baseLng = 72.8777;
+            const time = Date.now();
+            
+            // Create a simple walking pattern
+            const walkOffset = Math.sin(time / 10000) * 0.001;
+            
+            return {
+                lat: baseLat + walkOffset,
+                lng: baseLng + walkOffset * 0.5,
+                timestamp: time,
+                accuracy: 5 + Math.random() * 10
+            };
+        }
+
+        function simulateMotionData() {
+            const baseGravity = 9.8;
+            const vibration = (Math.random() - 0.5) * 2;
+            const roadNoise = (Math.random() - 0.5) * 0.5;
+            
+            return {
+                x: vibration + roadNoise,
+                y: (Math.random() - 0.5) * 0.3,
+                z: baseGravity + vibration * 0.5,
+                timestamp: Date.now()
+            };
+        }
+
+        function handleMotionEvent(event) {
+            if (!isRecording) return;
+            
+            const timestamp = Date.now();
+            const acc = event.accelerationIncludingGravity;
+            
+            if (acc && acc.x !== null && acc.y !== null && acc.z !== null) {
+                const rawMagnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+                const filteredMagnitude = filterVibration(rawMagnitude);
+                
+                accelerometerData.push({
+                    timestamp: timestamp,
+                    raw: rawMagnitude,
+                    filtered: filteredMagnitude,
+                    x: acc.x,
+                    y: acc.y,
+                    z: acc.z
+                });
+                
+                updateDataDisplay();
+            }
+        }
+
+        function filterVibration(magnitude) {
+            const baseline = 9.8;
+            const deviation = Math.abs(magnitude - baseline);
+            if (deviation > 15) return 0;
+            return Math.max(0, deviation - 0.5);
+        }
+
+        function latLonDistance(a, b) {
+            const R = 6371000;
+            const lat1 = a.lat * Math.PI / 180;
+            const lat2 = b.lat * Math.PI / 180;
+            const dLat = lat2 - lat1;
+            const dLon = (b.lng - a.lng) * Math.PI / 180;
+            const x = dLat;
+            const y = dLon * Math.cos((lat1 + lat2) / 2);
+            return Math.sqrt(x * x + y * y) * R;
+        }
+
+        function groupDataIntoSegments() {
+            if (gpsData.length < 2) return [];
+            
+            const segments = [];
+            let currentSegment = {
+                startPos: gpsData[0],
+                endPos: null,
+                distance: 0,
+                vibrationData: [],
+                roughness: 0
+            };
+            
+            for (let i = 1; i < gpsData.length; i++) {
+                const dist = latLonDistance(currentSegment.startPos, gpsData[i]);
+                
+                if (dist >= SEGMENT_LENGTH_M) {
+                    currentSegment.endPos = gpsData[i];
+                    currentSegment.distance = dist;
+                    
+                    const startTime = currentSegment.startPos.timestamp;
+                    const endTime = currentSegment.endPos.timestamp;
+                    currentSegment.vibrationData = accelerometerData.filter(
+                        d => d.timestamp >= startTime && d.timestamp <= endTime
+                    ).map(d => d.filtered);
+                    
+                    if (currentSegment.vibrationData.length > 0) {
+                        currentSegment.roughness = Math.sqrt(
+                            currentSegment.vibrationData.reduce((sum, x) => sum + x * x, 0) / 
+                            currentSegment.vibrationData.length
+                        );
+                    }
+                    
+                    logDebug(`Segment completed: ${dist.toFixed(1)}m, ${currentSegment.vibrationData.length} samples, roughness: ${currentSegment.roughness.toFixed(2)}`);
+                    segments.push(currentSegment);
+                    
+                    currentSegment = {
+                        startPos: gpsData[i],
+                        endPos: null,
+                        distance: 0,
+                        vibrationData: [],
+                        roughness: 0
+                    };
+                }
+            }
+            
+            return segments;
+        }
+
+        function updateDataDisplay() {
+            document.getElementById('gpsCount').textContent = gpsData.length;
+            document.getElementById('motionCount').textContent = accelerometerData.length;
+            document.getElementById('segmentCount').textContent = groupDataIntoSegments().length;
+        }
+
+        function startSimulationTest() {
+            logDebug('Starting simulation test');
+            isRecording = true;
+            accelerometerData = [];
+            gpsData = [];
+            
+            document.getElementById('startSim').disabled = true;
+            document.getElementById('stopSim').disabled = false;
+            
+            showUserFeedback('Simulation started - generating synthetic sensor data', 'success');
+            
+            // Simulate GPS updates every 2 seconds
+            const gpsInterval = setInterval(() => {
+                if (!isRecording) {
+                    clearInterval(gpsInterval);
+                    return;
+                }
+                
+                const simulatedGPS = simulateGPSData();
+                gpsData.push(simulatedGPS);
+                logDebug(`Simulated GPS: ${simulatedGPS.lat.toFixed(6)}, ${simulatedGPS.lng.toFixed(6)}`);
+                updateDataDisplay();
+            }, 2000);
+            
+            // Simulate motion updates every 100ms
+            const motionInterval = setInterval(() => {
+                if (!isRecording) {
+                    clearInterval(motionInterval);
+                    return;
+                }
+                
+                const simulatedMotion = simulateMotionData();
+                const event = {
+                    accelerationIncludingGravity: {
+                        x: simulatedMotion.x,
+                        y: simulatedMotion.y,
+                        z: simulatedMotion.z
+                    }
+                };
+                handleMotionEvent(event);
+            }, 100);
+            
+            simulationIntervals = [gpsInterval, motionInterval];
+        }
+
+        function stopSimulationTest() {
+            logDebug('Stopping simulation test');
+            isRecording = false;
+            
+            simulationIntervals.forEach(interval => clearInterval(interval));
+            simulationIntervals = [];
+            
+            document.getElementById('startSim').disabled = false;
+            document.getElementById('stopSim').disabled = true;
+            
+            const segments = groupDataIntoSegments();
+            logDebug(`Simulation completed. GPS: ${gpsData.length}, Motion: ${accelerometerData.length}, Segments: ${segments.length}`);
+            
+            showUserFeedback(`Test completed! Generated ${segments.length} road segments from simulated data.`, 'success');
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            document.getElementById('status-container').innerHTML = '';
+        }
+
+        window.onload = function() {
+            logDebug('Simulation test page loaded');
+            showUserFeedback('Ready to test simulation mode', 'success');
+        };
+    </script>
+</body>
+</html>

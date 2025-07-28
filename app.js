@@ -1,18 +1,49 @@
 // Milestone 5: Vibration Preview Graph for Upcoming Segment
 // Enhanced with Firebase integration and real sensor data
 
+// Debug and logging configuration
+const DEBUG_MODE = true; // Set to false for production
+const TEST_MODE = true; // Enables lower thresholds for testing
+
+function logDebug(message, data = null) {
+    if (DEBUG_MODE) {
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] ${message}`, data || '');
+    }
+}
+
+function showUserFeedback(message, type = 'info') {
+    logDebug(`User feedback (${type}): ${message}`);
+    if (type === 'error' || type === 'warning') {
+        alert(message);
+    }
+    // You could also add UI notifications here instead of alerts
+}
+
+// Check HTTPS requirement for sensor access
+function checkHTTPSRequirement() {
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        const message = 'HTTPS is required for sensor access. Please serve this app over HTTPS or use localhost for development.';
+        showUserFeedback(message, 'error');
+        return false;
+    }
+    return true;
+}
+
 // Initialize Firebase
 let db = null;
 if (typeof firebase !== 'undefined' && typeof firebaseConfig !== 'undefined') {
     try {
         firebase.initializeApp(firebaseConfig);
         db = firebase.firestore();
-        console.log('Firebase initialized successfully');
+        logDebug('Firebase initialized successfully');
     } catch (error) {
-        console.warn('Firebase initialization failed:', error);
+        logDebug('Firebase initialization failed', error);
+        showUserFeedback('Firebase initialization failed. Data will not be saved.', 'warning');
     }
 } else {
-    console.warn('Firebase or config not available. Please ensure firebase-config.js is properly configured.');
+    logDebug('Firebase or config not available');
+    showUserFeedback('Firebase not configured. Data will not be saved.', 'warning');
 }
 
 // Real sensor data variables
@@ -23,6 +54,12 @@ let recordingStartTime = null;
 let watchId = null;
 let currentPosition = null;
 let recordedSegments = [];
+
+// Permission states
+let gpsPermissionGranted = false;
+let motionPermissionGranted = false;
+let gpsPermissionRequested = false;
+let motionPermissionRequested = false;
 
 let map;
 let routePolyline;
@@ -36,7 +73,8 @@ const SIM_SPEED_MPS = 5.56; // 20 km/h
 let segments = []; // Each: {startIdx, endIdx, coords, vibration: [], roughness: number}
 let segmentPolylines = [];
 let currentSegmentIdx = null;
-const SEGMENT_LENGTH_M = 200;
+// Reduced segment length for testing
+const SEGMENT_LENGTH_M = TEST_MODE ? 50 : 200; // Use 50m for testing, 200m for production
 
 let tableEl = null;
 
@@ -44,6 +82,14 @@ let tableEl = null;
 let vibrationChart = null;
 
 function initMap() {
+    logDebug('Initializing map and application');
+    
+    // Check HTTPS requirement first
+    if (!checkHTTPSRequirement()) {
+        document.getElementById('startRecordingBtn').disabled = true;
+        return;
+    }
+    
     map = L.map('map').setView([19.0760, 72.8777], 13);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OSM contributors'
@@ -97,13 +143,184 @@ function initMap() {
         }
     });
 
-    // Enable recording button if geolocation is available
-    if (navigator.geolocation && window.DeviceMotionEvent) {
+    // Check sensor availability and request permissions
+    checkSensorAvailability();
+}
+
+// Check sensor availability and request permissions
+async function checkSensorAvailability() {
+    logDebug('Checking sensor availability');
+    
+    let gpsAvailable = false;
+    let motionAvailable = false;
+    
+    // Check GPS availability
+    if (!navigator.geolocation) {
+        logDebug('Geolocation not supported');
+        showUserFeedback('GPS/Geolocation is not supported on this device.', 'error');
+    } else {
+        logDebug('Geolocation API available');
+        gpsAvailable = true;
+    }
+    
+    // Check motion sensor availability
+    if (!window.DeviceMotionEvent) {
+        logDebug('Device motion not supported');
+        showUserFeedback('Accelerometer (Device Motion) is not supported on this device.', 'error');
+    } else {
+        logDebug('Device Motion API available');
+        motionAvailable = true;
+    }
+    
+    // Enable recording button only if both sensors are available
+    if (gpsAvailable && motionAvailable) {
         document.getElementById('startRecordingBtn').disabled = false;
+        logDebug('Recording button enabled - sensors available');
+    } else {
+        document.getElementById('startRecordingBtn').disabled = true;
+        logDebug('Recording button disabled - missing sensors');
+    }
+    
+    // For simulation mode, only check if map libraries are available
+    if (typeof L !== 'undefined') {
+        document.getElementById('startBtn').disabled = false;
+        logDebug('Simulation mode available');
+    } else {
+        logDebug('Map libraries not available - simulation disabled');
     }
 }
 
-// GPX parsing (only extracts <trkpt lat="..." lon="..."> from first <trk>)
+// Request GPS permission explicitly
+async function requestGPSPermission() {
+    logDebug('Requesting GPS permission');
+    
+    if (gpsPermissionRequested) {
+        logDebug('GPS permission already requested');
+        return gpsPermissionGranted;
+    }
+    
+    return new Promise((resolve) => {
+        gpsPermissionRequested = true;
+        
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                logDebug('GPS permission granted', position.coords);
+                gpsPermissionGranted = true;
+                showUserFeedback('GPS access granted successfully!', 'info');
+                resolve(true);
+            },
+            (error) => {
+                logDebug('GPS permission denied or failed', error);
+                gpsPermissionGranted = false;
+                
+                let message = 'GPS access denied or failed: ';
+                switch(error.code) {
+                    case error.PERMISSION_DENIED:
+                        message += 'Permission denied. Please enable location access for this website.';
+                        break;
+                    case error.POSITION_UNAVAILABLE:
+                        message += 'Position unavailable. Please check your GPS settings.';
+                        break;
+                    case error.TIMEOUT:
+                        message += 'Request timeout. Please try again.';
+                        break;
+                    default:
+                        message += 'Unknown error occurred.';
+                        break;
+                }
+                
+                showUserFeedback(message, 'error');
+                resolve(false);
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
+        );
+    });
+}
+
+// Request motion sensor permission explicitly
+async function requestMotionPermission() {
+    logDebug('Requesting motion sensor permission');
+    
+    if (motionPermissionRequested) {
+        logDebug('Motion permission already requested');
+        return motionPermissionGranted;
+    }
+    
+    motionPermissionRequested = true;
+    
+    // For iOS 13+ devices, explicit permission is required
+    if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        logDebug('iOS-style permission request required');
+        
+        try {
+            const response = await DeviceMotionEvent.requestPermission();
+            if (response === 'granted') {
+                logDebug('iOS motion permission granted');
+                motionPermissionGranted = true;
+                showUserFeedback('Motion sensor access granted!', 'info');
+                return true;
+            } else {
+                logDebug('iOS motion permission denied');
+                motionPermissionGranted = false;
+                showUserFeedback('Motion sensor permission denied. Road quality detection will not work properly.', 'error');
+                return false;
+            }
+        } catch (error) {
+            logDebug('iOS motion permission request failed', error);
+            motionPermissionGranted = false;
+            showUserFeedback('Motion sensor permission request failed.', 'error');
+            return false;
+        }
+    } else {
+        // For non-iOS devices, test if motion events work
+        logDebug('Testing motion sensor availability (non-iOS)');
+        
+        return new Promise((resolve) => {
+            let testCount = 0;
+            let hasMotionData = false;
+            
+            function testMotionHandler(event) {
+                testCount++;
+                const acc = event.accelerationIncludingGravity;
+                
+                if (acc && acc.x !== null && acc.y !== null && acc.z !== null) {
+                    hasMotionData = true;
+                    logDebug('Motion sensor test successful', acc);
+                }
+                
+                if (testCount >= 3) {
+                    window.removeEventListener('devicemotion', testMotionHandler);
+                    
+                    if (hasMotionData) {
+                        motionPermissionGranted = true;
+                        showUserFeedback('Motion sensor access working!', 'info');
+                        resolve(true);
+                    } else {
+                        motionPermissionGranted = false;
+                        showUserFeedback('Motion sensors appear to be blocked or unavailable. Please check your browser settings.', 'error');
+                        resolve(false);
+                    }
+                }
+            }
+            
+            window.addEventListener('devicemotion', testMotionHandler);
+            
+            // Timeout after 3 seconds
+            setTimeout(() => {
+                window.removeEventListener('devicemotion', testMotionHandler);
+                if (testCount === 0) {
+                    motionPermissionGranted = false;
+                    showUserFeedback('Motion sensors not responding. Please ensure you are on a mobile device and motion access is allowed.', 'error');
+                    resolve(false);
+                }
+            }, 3000);
+        });
+    }
+}
 function parseGPX(gpxText) {
     const parser = new DOMParser();
     const xmlDoc = parser.parseFromString(gpxText, "application/xml");
@@ -321,12 +538,32 @@ function updateVibrationPreview() {
 }
 
 // Real sensor data collection functions
-function startRealRecording() {
+async function startRealRecording() {
+    logDebug('Starting real recording');
+    
     if (!navigator.geolocation || !window.DeviceMotionEvent) {
-        alert('GPS or accelerometer not supported on this device');
+        showUserFeedback('GPS or accelerometer not supported on this device', 'error');
         return;
     }
 
+    // Request permissions explicitly
+    logDebug('Requesting GPS permission...');
+    const gpsOk = await requestGPSPermission();
+    
+    if (!gpsOk) {
+        logDebug('GPS permission failed, aborting recording');
+        return;
+    }
+    
+    logDebug('Requesting motion sensor permission...');
+    const motionOk = await requestMotionPermission();
+    
+    if (!motionOk) {
+        logDebug('Motion permission failed, aborting recording');
+        return;
+    }
+
+    // Both permissions granted, start recording
     isRecording = true;
     recordingStartTime = Date.now();
     accelerometerData = [];
@@ -334,26 +571,42 @@ function startRealRecording() {
     recordedSegments = [];
     currentPosition = null;
 
-    // Request permissions for iOS 13+
-    if (typeof DeviceMotionEvent.requestPermission === 'function') {
-        DeviceMotionEvent.requestPermission().then(response => {
-            if (response === 'granted') {
-                startSensorListeners();
-            } else {
-                alert('Motion permission denied');
-                stopRealRecording();
-            }
-        });
-    } else {
-        startSensorListeners();
-    }
+    logDebug('Starting sensor listeners with both permissions granted');
+    startSensorListeners();
 
     document.getElementById('startRecordingBtn').disabled = true;
     document.getElementById('stopRecordingBtn').disabled = false;
     document.getElementById('startBtn').disabled = true;
+    
+    showUserFeedback('Recording started! Move to collect road quality data.', 'info');
+    
+    // Set up a timer to check for data collection
+    setTimeout(() => {
+        if (isRecording) {
+            checkDataCollection();
+        }
+    }, 10000); // Check after 10 seconds
+}
+
+function checkDataCollection() {
+    logDebug(`Data collection check: GPS=${gpsData.length}, Accelerometer=${accelerometerData.length}`);
+    
+    if (gpsData.length === 0) {
+        showUserFeedback('No GPS data received yet. Please ensure location services are enabled and you are outdoors.', 'warning');
+    }
+    
+    if (accelerometerData.length === 0) {
+        showUserFeedback('No motion sensor data received. Please ensure you are moving the device.', 'warning');
+    }
+    
+    if (gpsData.length > 0 && accelerometerData.length > 0) {
+        logDebug('Data collection is working properly');
+    }
 }
 
 function startSensorListeners() {
+    logDebug('Starting GPS and motion sensor listeners');
+    
     // Start GPS tracking
     watchId = navigator.geolocation.watchPosition(
         (position) => {
@@ -366,18 +619,37 @@ function startSensorListeners() {
             };
             gpsData.push(currentPosition);
             
+            logDebug(`GPS update: ${currentPosition.lat.toFixed(6)}, ${currentPosition.lng.toFixed(6)}, accuracy: ${currentPosition.accuracy}m`);
+            
             // Update map marker if available
             if (map && marker) {
                 marker.setLatLng([currentPosition.lat, currentPosition.lng]);
             } else if (map) {
                 marker = L.marker([currentPosition.lat, currentPosition.lng]).addTo(map);
                 map.setView([currentPosition.lat, currentPosition.lng], 16);
+                logDebug('Map marker created and centered');
             }
             
             processRealTimeData();
         },
         (error) => {
-            console.error('GPS error:', error);
+            logDebug('GPS error occurred', error);
+            let message = 'GPS error: ';
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message += 'Permission denied';
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message += 'Position unavailable';
+                    break;
+                case error.TIMEOUT:
+                    message += 'Request timeout';
+                    break;
+                default:
+                    message += 'Unknown error';
+                    break;
+            }
+            showUserFeedback(message, 'error');
         },
         {
             enableHighAccuracy: true,
@@ -388,6 +660,7 @@ function startSensorListeners() {
 
     // Start accelerometer tracking
     window.addEventListener('devicemotion', handleMotionEvent);
+    logDebug('Motion event listener added');
 }
 
 function handleMotionEvent(event) {
@@ -408,6 +681,16 @@ function handleMotionEvent(event) {
             y: acc.y,
             z: acc.z
         });
+        
+        // Log every 50th sample to avoid spam
+        if (accelerometerData.length % 50 === 0) {
+            logDebug(`Accelerometer data: ${accelerometerData.length} samples, latest: ${rawMagnitude.toFixed(2)} (filtered: ${filteredMagnitude.toFixed(2)})`);
+        }
+    } else {
+        // Log null accelerometer readings occasionally
+        if (Math.random() < 0.01) { // 1% chance to log
+            logDebug('Accelerometer returned null values', acc);
+        }
     }
 }
 
@@ -460,7 +743,8 @@ function groupDataIntoSegments() {
             [gpsData[i].lat, gpsData[i].lng]
         );
         
-        if (dist >= 200) {
+        // Use the configured segment length (50m for testing, 200m for production)
+        if (dist >= SEGMENT_LENGTH_M) {
             // Complete current segment
             currentSegment.endPos = gpsData[i];
             currentSegment.distance = dist;
@@ -476,6 +760,7 @@ function groupDataIntoSegments() {
                 currentSegment.roughness = computeRMS(currentSegment.vibrationData);
             }
             
+            logDebug(`Segment completed: ${dist.toFixed(1)}m, ${currentSegment.vibrationData.length} vibration samples, roughness: ${currentSegment.roughness.toFixed(2)}`);
             segments.push(currentSegment);
             
             // Start new segment
@@ -526,14 +811,17 @@ function updateRealTimeTable() {
 }
 
 function stopRealRecording() {
+    logDebug('Stopping real recording');
     isRecording = false;
     
     if (watchId) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
+        logDebug('GPS watch cleared');
     }
     
     window.removeEventListener('devicemotion', handleMotionEvent);
+    logDebug('Motion event listener removed');
     
     document.getElementById('startRecordingBtn').disabled = false;
     document.getElementById('stopRecordingBtn').disabled = true;
@@ -541,22 +829,40 @@ function stopRealRecording() {
     
     // Process final segments and export to Firebase
     const finalSegments = groupDataIntoSegments();
+    logDebug(`Recording stopped. Collected ${gpsData.length} GPS points, ${accelerometerData.length} accelerometer samples, ${finalSegments.length} segments`);
+    
+    if (finalSegments.length === 0) {
+        showUserFeedback('No road segments were recorded. Try recording over a longer distance or moving more.', 'warning');
+    } else {
+        showUserFeedback(`Recording completed! ${finalSegments.length} road segments will be uploaded.`, 'info');
+    }
+    
     exportToFirebase(finalSegments);
 }
 
 // Firebase functions
 async function exportToFirebase(segments) {
+    logDebug(`Attempting to export ${segments.length} segments to Firebase`);
+    
     if (!db) {
-        console.warn('Firebase not initialized, cannot export data');
+        logDebug('Firebase not initialized, cannot export data');
+        showUserFeedback('Firebase not available. Data cannot be saved to cloud.', 'warning');
+        return;
+    }
+    
+    if (segments.length === 0) {
+        logDebug('No segments to export');
+        showUserFeedback('No road segments to save.', 'info');
         return;
     }
     
     try {
         const batch = db.batch();
+        let validSegments = 0;
         
         for (const segment of segments) {
             if (segment.endPos) {
-                const docId = `${segment.startPos.lat.toFixed(6)}_${segment.startPos.lng.toFixed(6)}`;
+                const docId = `${segment.startPos.lat.toFixed(6)}_${segment.startPos.lng.toFixed(6)}_${Date.now()}`;
                 const docRef = db.collection('roadQuality').doc(docId);
                 
                 const data = {
@@ -567,29 +873,41 @@ async function exportToFirebase(segments) {
                     roughness: segment.roughness,
                     distance: segment.distance,
                     timestamp: new Date(),
-                    vibrationSamples: segment.vibrationData.length
+                    vibrationSamples: segment.vibrationData.length,
+                    testMode: TEST_MODE // Mark if this was recorded in test mode
                 };
                 
                 batch.set(docRef, data, { merge: true });
+                validSegments++;
+                logDebug(`Prepared segment ${validSegments} for upload: ${segment.distance.toFixed(1)}m, roughness: ${segment.roughness.toFixed(2)}`);
             }
         }
         
+        if (validSegments === 0) {
+            logDebug('No valid segments to upload');
+            showUserFeedback('No valid road segments to save.', 'warning');
+            return;
+        }
+        
+        logDebug(`Uploading ${validSegments} segments to Firebase...`);
         await batch.commit();
-        console.log('Data exported to Firebase successfully');
-        alert('Recording completed and data saved!');
+        
+        logDebug('Data exported to Firebase successfully');
+        showUserFeedback(`Recording completed! ${validSegments} road segments saved successfully.`, 'info');
     } catch (error) {
-        console.error('Error exporting to Firebase:', error);
-        alert('Error saving data to Firebase');
+        logDebug('Error exporting to Firebase', error);
+        showUserFeedback(`Error saving data: ${error.message}. Please check your internet connection and try again.`, 'error');
     }
 }
 
 async function loadPreviousData() {
     if (!db) {
-        console.warn('Firebase not initialized, cannot load previous data');
+        logDebug('Firebase not initialized, cannot load previous data');
         return [];
     }
     
     try {
+        logDebug('Loading previous road quality data from Firebase...');
         const snapshot = await db.collection('roadQuality').get();
         const previousData = [];
         
@@ -598,12 +916,27 @@ async function loadPreviousData() {
             previousData.push(data);
         });
         
-        console.log(`Loaded ${previousData.length} previous road quality records`);
+        logDebug(`Loaded ${previousData.length} previous road quality records`);
         return previousData;
     } catch (error) {
-        console.error('Error loading previous data:', error);
+        logDebug('Error loading previous data', error);
+        showUserFeedback('Could not load previous road data from Firebase.', 'warning');
         return [];
     }
+}
+
+// GPX parsing (only extracts <trkpt lat="..." lon="..."> from first <trk>)
+function parseGPX(gpxText) {
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(gpxText, "application/xml");
+    const trkpts = xmlDoc.getElementsByTagName("trkpt");
+    let coordinates = [];
+    for (let i = 0; i < trkpts.length; i++) {
+        const lat = parseFloat(trkpts[i].getAttribute("lat"));
+        const lon = parseFloat(trkpts[i].getAttribute("lon"));
+        coordinates.push([lat, lon]);
+    }
+    return coordinates;
 }
 
 function displayPreviousData(previousData) {

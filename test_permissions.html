@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Permission and Sensor Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .warning { background: #fff3cd; color: #856404; border: 1px solid #ffeaa7; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
+        #log { height: 300px; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; margin: 10px 0; background: #f8f9fa; }
+    </style>
+</head>
+<body>
+    <h1>Enhanced Permission and Sensor Test</h1>
+    
+    <div id="status-container"></div>
+    
+    <h3>Protocol Check</h3>
+    <div id="protocol-check"></div>
+    
+    <h3>Permission Tests</h3>
+    <button onclick="testGPSPermission()">Request GPS Permission</button>
+    <button onclick="testMotionPermission()">Request Motion Permission</button>
+    <button onclick="testBothPermissions()">Request Both Permissions</button>
+    
+    <h3>Data Collection Test</h3>
+    <button id="startTest" onclick="startDataTest()">Start Data Collection Test</button>
+    <button id="stopTest" onclick="stopDataTest()" disabled>Stop Test</button>
+    
+    <div id="log"></div>
+
+    <script>
+        // Copy the improved functions from app.js for testing
+        const DEBUG_MODE = true;
+        const TEST_MODE = true;
+        
+        let gpsPermissionGranted = false;
+        let motionPermissionGranted = false;
+        let gpsPermissionRequested = false;
+        let motionPermissionRequested = false;
+        
+        let testRunning = false;
+        let testGPSData = [];
+        let testMotionData = [];
+        let testInterval = null;
+
+        function logDebug(message, data = null) {
+            if (DEBUG_MODE) {
+                const timestamp = new Date().toISOString();
+                console.log(`[${timestamp}] ${message}`, data || '');
+                
+                const logDiv = document.getElementById('log');
+                const entry = document.createElement('div');
+                entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+                logDiv.appendChild(entry);
+                logDiv.scrollTop = logDiv.scrollHeight;
+            }
+        }
+
+        function showUserFeedback(message, type = 'info') {
+            logDebug(`User feedback (${type}): ${message}`);
+            
+            const container = document.getElementById('status-container');
+            const status = document.createElement('div');
+            status.className = `status ${type}`;
+            status.textContent = message;
+            container.appendChild(status);
+            
+            if (type === 'error') {
+                alert(message);
+            }
+        }
+
+        function checkHTTPSRequirement() {
+            const protocolDiv = document.getElementById('protocol-check');
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                protocolDiv.innerHTML = '<div class="status error">⚠️ HTTPS required for sensor access! Currently on ' + location.protocol + '</div>';
+                return false;
+            } else {
+                protocolDiv.innerHTML = '<div class="status success">✅ Protocol OK for sensor access (' + location.protocol + ')</div>';
+                return true;
+            }
+        }
+
+        async function requestGPSPermission() {
+            logDebug('Requesting GPS permission');
+            
+            if (gpsPermissionRequested) {
+                logDebug('GPS permission already requested');
+                return gpsPermissionGranted;
+            }
+            
+            if (!navigator.geolocation) {
+                logDebug('Geolocation not supported');
+                showUserFeedback('GPS/Geolocation is not supported on this device.', 'error');
+                return false;
+            }
+            
+            return new Promise((resolve) => {
+                gpsPermissionRequested = true;
+                
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        logDebug('GPS permission granted', position.coords);
+                        gpsPermissionGranted = true;
+                        showUserFeedback('GPS access granted successfully!', 'success');
+                        resolve(true);
+                    },
+                    (error) => {
+                        logDebug('GPS permission denied or failed', error);
+                        gpsPermissionGranted = false;
+                        
+                        let message = 'GPS access failed: ';
+                        switch(error.code) {
+                            case error.PERMISSION_DENIED:
+                                message += 'Permission denied. Please enable location access.';
+                                break;
+                            case error.POSITION_UNAVAILABLE:
+                                message += 'Position unavailable. Check GPS settings.';
+                                break;
+                            case error.TIMEOUT:
+                                message += 'Request timeout. Try again.';
+                                break;
+                            default:
+                                message += 'Unknown error occurred.';
+                                break;
+                        }
+                        
+                        showUserFeedback(message, 'error');
+                        resolve(false);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 10000,
+                        maximumAge: 0
+                    }
+                );
+            });
+        }
+
+        async function requestMotionPermission() {
+            logDebug('Requesting motion sensor permission');
+            
+            if (motionPermissionRequested) {
+                logDebug('Motion permission already requested');
+                return motionPermissionGranted;
+            }
+            
+            if (!window.DeviceMotionEvent) {
+                logDebug('Device motion not supported');
+                showUserFeedback('Accelerometer (Device Motion) is not supported on this device.', 'error');
+                return false;
+            }
+            
+            motionPermissionRequested = true;
+            
+            // For iOS 13+ devices, explicit permission is required
+            if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                logDebug('iOS-style permission request required');
+                
+                try {
+                    const response = await DeviceMotionEvent.requestPermission();
+                    if (response === 'granted') {
+                        logDebug('iOS motion permission granted');
+                        motionPermissionGranted = true;
+                        showUserFeedback('Motion sensor access granted!', 'success');
+                        return true;
+                    } else {
+                        logDebug('iOS motion permission denied');
+                        motionPermissionGranted = false;
+                        showUserFeedback('Motion sensor permission denied.', 'error');
+                        return false;
+                    }
+                } catch (error) {
+                    logDebug('iOS motion permission request failed', error);
+                    motionPermissionGranted = false;
+                    showUserFeedback('Motion sensor permission request failed.', 'error');
+                    return false;
+                }
+            } else {
+                // For non-iOS devices, test if motion events work
+                logDebug('Testing motion sensor availability (non-iOS)');
+                
+                return new Promise((resolve) => {
+                    let testCount = 0;
+                    let hasMotionData = false;
+                    
+                    function testMotionHandler(event) {
+                        testCount++;
+                        const acc = event.accelerationIncludingGravity;
+                        
+                        if (acc && acc.x !== null && acc.y !== null && acc.z !== null) {
+                            hasMotionData = true;
+                            logDebug('Motion sensor test successful', acc);
+                        }
+                        
+                        if (testCount >= 3) {
+                            window.removeEventListener('devicemotion', testMotionHandler);
+                            
+                            if (hasMotionData) {
+                                motionPermissionGranted = true;
+                                showUserFeedback('Motion sensor access working!', 'success');
+                                resolve(true);
+                            } else {
+                                motionPermissionGranted = false;
+                                showUserFeedback('Motion sensors appear to be blocked or unavailable.', 'error');
+                                resolve(false);
+                            }
+                        }
+                    }
+                    
+                    window.addEventListener('devicemotion', testMotionHandler);
+                    
+                    // Timeout after 3 seconds
+                    setTimeout(() => {
+                        window.removeEventListener('devicemotion', testMotionHandler);
+                        if (testCount === 0) {
+                            motionPermissionGranted = false;
+                            showUserFeedback('Motion sensors not responding. Ensure you are on a mobile device.', 'warning');
+                            resolve(false);
+                        }
+                    }, 3000);
+                });
+            }
+        }
+
+        async function testGPSPermission() {
+            await requestGPSPermission();
+        }
+
+        async function testMotionPermission() {
+            await requestMotionPermission();
+        }
+
+        async function testBothPermissions() {
+            logDebug('Testing both GPS and Motion permissions...');
+            const gpsOk = await requestGPSPermission();
+            const motionOk = await requestMotionPermission();
+            
+            if (gpsOk && motionOk) {
+                showUserFeedback('Both GPS and Motion permissions granted! Ready for recording.', 'success');
+            } else if (gpsOk) {
+                showUserFeedback('GPS OK, but Motion permission failed.', 'warning');
+            } else if (motionOk) {
+                showUserFeedback('Motion OK, but GPS permission failed.', 'warning');
+            } else {
+                showUserFeedback('Both permissions failed.', 'error');
+            }
+        }
+
+        async function startDataTest() {
+            if (!gpsPermissionGranted || !motionPermissionGranted) {
+                showUserFeedback('Please grant both permissions first before starting data test.', 'warning');
+                return;
+            }
+            
+            testRunning = true;
+            testGPSData = [];
+            testMotionData = [];
+            
+            document.getElementById('startTest').disabled = true;
+            document.getElementById('stopTest').disabled = false;
+            
+            logDebug('Starting data collection test...');
+            
+            // Start GPS tracking
+            if (navigator.geolocation) {
+                navigator.geolocation.watchPosition(
+                    (position) => {
+                        testGPSData.push({
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude,
+                            accuracy: position.coords.accuracy,
+                            timestamp: Date.now()
+                        });
+                        
+                        if (testGPSData.length % 5 === 0) {
+                            logDebug(`GPS data collected: ${testGPSData.length} points`);
+                        }
+                    },
+                    (error) => {
+                        logDebug('GPS tracking error', error);
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        maximumAge: 1000,
+                        timeout: 5000
+                    }
+                );
+            }
+            
+            // Start motion tracking
+            function motionHandler(event) {
+                if (!testRunning) return;
+                
+                const acc = event.accelerationIncludingGravity;
+                if (acc && acc.x !== null && acc.y !== null && acc.z !== null) {
+                    const magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+                    testMotionData.push({
+                        x: acc.x,
+                        y: acc.y,
+                        z: acc.z,
+                        magnitude: magnitude,
+                        timestamp: Date.now()
+                    });
+                    
+                    if (testMotionData.length % 50 === 0) {
+                        logDebug(`Motion data collected: ${testMotionData.length} samples`);
+                    }
+                }
+            }
+            
+            window.addEventListener('devicemotion', motionHandler);
+            
+            // Check data collection status
+            testInterval = setInterval(() => {
+                logDebug(`Data status: GPS=${testGPSData.length}, Motion=${testMotionData.length}`);
+                
+                if (testGPSData.length === 0) {
+                    logDebug('No GPS data yet - check location permissions and settings');
+                }
+                if (testMotionData.length === 0) {
+                    logDebug('No motion data yet - try moving the device');
+                }
+            }, 5000);
+        }
+
+        function stopDataTest() {
+            testRunning = false;
+            
+            if (testInterval) {
+                clearInterval(testInterval);
+                testInterval = null;
+            }
+            
+            document.getElementById('startTest').disabled = false;
+            document.getElementById('stopTest').disabled = true;
+            
+            logDebug(`Data test completed. GPS: ${testGPSData.length} points, Motion: ${testMotionData.length} samples`);
+            
+            if (testGPSData.length > 0 && testMotionData.length > 0) {
+                showUserFeedback(`Data collection successful! GPS: ${testGPSData.length}, Motion: ${testMotionData.length}`, 'success');
+            } else {
+                showUserFeedback('Data collection had issues. Check the log for details.', 'warning');
+            }
+        }
+
+        // Initialize
+        window.onload = function() {
+            logDebug('Permission and sensor test page loaded');
+            checkHTTPSRequirement();
+        };
+    </script>
+</body>
+</html>

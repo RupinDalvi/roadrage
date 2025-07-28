@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Bike Road Quality Mapper</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+</head>
+<body>
+    <header>
+        <h1>Bike Road Quality Mapper</h1>
+        <div>
+            <input type="file" id="gpxInput" accept=".gpx" />
+            <button id="startBtn" disabled>Start Simulation</button>
+            <button id="stopBtn" disabled>Stop Simulation</button>
+            <button id="startRecordingBtn" disabled>Start Recording</button>
+            <button id="stopRecordingBtn" disabled>Stop Recording</button>
+        </div>
+    </header>
+    <main>
+        <section id="mainContent">
+            <div id="mapSection">
+                <div id="map"></div>
+            </div>
+            <div id="graphSection">
+                <h3>Upcoming Vibration Data (Next 200m)</h3>
+                <canvas id="vibrationGraph" width="350" height="200"></canvas>
+            </div>
+        </section>
+    </main>
+    <footer>
+        <p>© 2025 Bike Road Quality Mapper | Milestone 5 Demo</p>
+    </footer>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="firebase-config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
